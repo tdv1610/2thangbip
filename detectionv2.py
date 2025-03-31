@@ -3,7 +3,7 @@ import torch
 from transformers import YolosImageProcessor, YolosForObjectDetection
 import os
 import numpy as np
-from collections import deque
+import csv
 
 # ------------------------
 # 1. CÀI ĐẶT YOLO VIẾT
@@ -13,13 +13,24 @@ processor = YolosImageProcessor.from_pretrained("hustvl/yolos-tiny")
 model = YolosForObjectDetection.from_pretrained("hustvl/yolos-tiny").to(device)
 
 # ------------------------
-# 2. ĐỊNH NGHĨA HÀM HỖ TRỢ
+# 1.1. CÀI ĐẶT THÔNG SỐ CHO TÍNH KHOẢNG CÁCH
+# ------------------------
+focal_length = 550    # tiêu cự camera (pixel)
+car_length = 2.5      # chiều dài xe thực tế (mét)
+
+# ------------------------
+# 1.2. CẤU HÌNH MÔ PHỎNG EGO-MOTION
+# ------------------------
+# Giả sử xe gắn máy quay chạy ổn định 80 km/h
+CAMERA_SPEED_KMH = 80
+
+# ------------------------
+# 2. HÀM HỖ TRỢ
 # ------------------------
 def region_of_interest(img, vertices):
     mask = np.zeros_like(img)
     cv2.fillPoly(mask, vertices, 255)
-    masked = cv2.bitwise_and(img, mask)
-    return masked
+    return cv2.bitwise_and(img, mask)
 
 def draw_lines(img, lines, color=(255, 0, 0), thickness=3):
     if lines is None:
@@ -28,22 +39,21 @@ def draw_lines(img, lines, color=(255, 0, 0), thickness=3):
         for x1, y1, x2, y2 in line:
             cv2.line(img, (x1, y1), (x2, y2), color, thickness)
 
-def distance_to_line(point, line):
-    # Tính khoảng cách từ điểm point (x0, y0) đến đường thẳng xác định bởi 2 điểm line = [x1, y1, x2, y2]
-    x0, y0 = point
-    x1, y1, x2, y2 = line
-    num = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1)
-    den = np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
-    return num / (den + 1e-6)
-
 def get_center(box):
-    # Box ở định dạng [x1, y1, x2, y2]
     x1, y1, x2, y2 = box
     return ((x1 + x2) // 2, (y1 + y2) // 2)
 
-# Lớp Kalman cho tracking (như cũ)
+def estimate_distance(bbox, focal_length, car_length):
+    pixel_length = bbox[2] - bbox[0]
+    if pixel_length <= 0:
+        return float('inf')
+    return (car_length * focal_length) / pixel_length
+
+# ------------------------
+# 3. LỚP KALMAN CHO TRACKING (VỚI ƯỚC TÍNH VẬN TỐC TƯƠNG ĐỐI)
+# ------------------------
 class KalmanBoxTracker:
-    def __init__(self, bbox, id):
+    def __init__(self, bbox, id, label):
         self.kalman = cv2.KalmanFilter(4, 2)
         self.kalman.measurementMatrix = np.array([[1, 0, 0, 0],
                                                   [0, 1, 0, 0]], np.float32)
@@ -51,28 +61,52 @@ class KalmanBoxTracker:
                                                  [0, 1, 0, 1],
                                                  [0, 0, 1, 0],
                                                  [0, 0, 0, 1]], np.float32)
-        self.kalman.processNoiseCov = np.array([[1, 0, 0, 0],
-                                                [0, 1, 0, 0],
-                                                [0, 0, 1, 0],
-                                                [0, 0, 0, 1]], np.float32) * 0.03
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
+        # Khởi tạo state với [x, y, dx, dy]
         self.kalman.statePre = np.array([[bbox[0]], [bbox[1]], [0], [0]], np.float32)
         self.kalman.statePost = np.array([[bbox[0]], [bbox[1]], [0], [0]], np.float32)
         self.bbox = bbox
         self.id = id
+        self.label = label  # lưu nhãn của đối tượng
+        self.velocity_history = []  # Lưu lịch sử vận tốc để làm mượt
 
-    def update(self, bbox):
+    def update(self, bbox, label):
         self.kalman.correct(np.array([[bbox[0]], [bbox[1]]], np.float32))
         self.bbox = bbox
+        self.label = label
 
     def predict(self):
         pred = self.kalman.predict()
-        # Giả sử bbox định dạng [x1, y1, x2, y2], ta giữ nguyên kích thước hiện tại
         return [int(pred[0]), int(pred[1]), self.bbox[2], self.bbox[3]]
 
+    def get_velocity(self, fps, car_length, ego_motion):
+        # Ước tính vận tốc tương đối từ Kalman (đơn vị pixel/frame)
+        velocity = self.kalman.statePost[2:4].flatten()
+        # Hiệu chỉnh: loại bỏ chuyển động của máy quay (ego-motion)
+        corrected_velocity = velocity - ego_motion
+        pixel_width = self.bbox[2] - self.bbox[0]
+        if pixel_width <= 0:
+            rel_v_mps = 0.0
+        else:
+            scale = car_length / pixel_width  # chuyển đổi pixel -> mét
+            rel_v_mps = np.linalg.norm(corrected_velocity) * fps * scale
+
+        # Làm mượt: trung bình 5 giá trị cuối
+        self.velocity_history.append(rel_v_mps)
+        if len(self.velocity_history) > 5:
+            self.velocity_history.pop(0)
+        smoothed_rel_v = np.mean(self.velocity_history)
+        
+        # Kết hợp với tốc độ của xe gắn máy quay (chuyển từ km/h sang m/s)
+        camera_speed_mps = CAMERA_SPEED_KMH / 3.6
+        absolute_speed_mps = smoothed_rel_v + camera_speed_mps
+        # Trả về km/h
+        return absolute_speed_mps * 3.6
+
 # ------------------------
-# 3. XỬ LÝ VIDEO VÀ TÍCH HỢP
+# 4. XỬ LÝ VIDEO VÀ GHI THÔNG TIN RA CSV
 # ------------------------
-video_folder = "/Users/nhxtrxng/Desktop/NCKH_2/raw_vid"
+video_folder = "archive 2/testing"
 video_name = input("Nhập tên file video (không cần đuôi .avi): ").strip()
 video_filename = video_name if video_name.lower().endswith(".mp4") else video_name + ".mp4"
 video_path = os.path.join(video_folder, video_filename)
@@ -91,7 +125,7 @@ if not cap.isOpened():
 
 cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
 fps = cap.get(cv2.CAP_PROP_FPS)
-frame_jump = int(fps * 5)  # Nhảy 5 giây
+frame_jump = int(fps * 5)
 
 print("\nCác phím điều khiển:")
 print("  'q'  : Thoát video")
@@ -103,6 +137,11 @@ paused = False
 trackers = []
 next_id = 0
 
+prev_gray = None
+
+all_records = []  # Danh sách lưu thông tin các vật thể qua các frame
+frame_counter = 0
+
 while cap.isOpened():
     if not paused:
         ret, frame = cap.read()
@@ -110,8 +149,30 @@ while cap.isOpened():
             print("Đã hết video!")
             break
 
+        frame_counter += 1
+        # Tính thời gian (giây) dựa trên frame_counter và fps
+        current_second = frame_counter / fps
+
+        current_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         # ------------------------
-        # 3.1. YOLO VIẾT: Nhận diện xe
+        # Ước tính chuyển động của máy quay (ego-motion) từ optical flow
+        # ------------------------
+        ego_motion = np.array([0, 0], dtype=np.float32)
+        if prev_gray is not None:
+            features_prev = cv2.goodFeaturesToTrack(prev_gray, maxCorners=200, qualityLevel=0.01, minDistance=30)
+            if features_prev is not None:
+                features_curr, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, current_gray, features_prev, None)
+                if features_curr is not None and status is not None:
+                    good_prev = features_prev[status.flatten() == 1]
+                    good_curr = features_curr[status.flatten() == 1]
+                    if len(good_prev) > 0:
+                        motion_vectors = good_curr - good_prev
+                        ego_motion = np.mean(motion_vectors, axis=0)
+        prev_gray = current_gray.copy()
+
+        # ------------------------
+        # 4.1. YOLO VIẾT: Nhận diện xe
         # ------------------------
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         inputs = processor(images=image_rgb, return_tensors="pt").to(device)
@@ -125,7 +186,7 @@ while cap.isOpened():
             label_name = model.config.id2label[label.item()]
             text = f"{label_name}: {score:.2f} ({box[0]},{box[1]})-({box[2]},{box[3]})"
 
-            # Cập nhật hoặc khởi tạo tracker
+            # Kiểm tra và cập nhật tracker dựa trên khoảng cách giữa bbox
             min_dist = float('inf')
             best_tracker = None
             for tracker in trackers:
@@ -135,11 +196,11 @@ while cap.isOpened():
                     min_dist = dist
                     best_tracker = tracker
 
-            if min_dist < 50:
-                best_tracker.update(box)
+            if min_dist < 50 and best_tracker is not None:
+                best_tracker.update(box, label_name)
                 new_trackers.append(best_tracker)
             else:
-                new_tracker = KalmanBoxTracker(box, next_id)
+                new_tracker = KalmanBoxTracker(box, next_id, label_name)
                 next_id += 1
                 new_trackers.append(new_tracker)
 
@@ -150,43 +211,46 @@ while cap.isOpened():
         trackers = new_trackers
 
         # ------------------------
-        # 3.2. Lane Detection: Dùng Canny + Hough để phát hiện làn đường
+        # 4.2. Lane Detection: Dùng Canny + Hough để phát hiện làn đường
         # ------------------------
         gray_lane = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur_lane = cv2.GaussianBlur(gray_lane, (5, 5), 0)
         edges = cv2.Canny(blur_lane, 50, 150)
         h, w = edges.shape
         roi_vertices = np.array([[(0, h),
-                                  (w * 0.45, h * 0.6),
-                                  (w * 0.55, h * 0.6),
-                                  (w, h)]], dtype=np.int32)
+                                   (w * 0.45, h * 0.6),
+                                   (w * 0.55, h * 0.6),
+                                   (w, h)]], dtype=np.int32)
         masked_edges = region_of_interest(edges, roi_vertices)
         lane_lines = cv2.HoughLinesP(masked_edges, rho=1, theta=np.pi/180,
                                      threshold=50, minLineLength=100, maxLineGap=50)
-        # Vẽ làn đường (màu xanh dương)
         draw_lines(frame, lane_lines, color=(255, 0, 0), thickness=3)
 
         # ------------------------
-        # 3.3. Phân tích khoảng cách giữa xe và lane
+        # 4.3. Ước tính khoảng cách và vận tốc (kết hợp vận tốc tương đối và tốc độ camera)
         # ------------------------
         for tracker in trackers:
             pred_box = tracker.predict()  # [x1, y1, x2, y2]
             center = get_center(pred_box)
-            if lane_lines is not None:
-                distances = []
-                for line in lane_lines:
-                    for x1, y1, x2, y2 in line:
-                        d = distance_to_line(center, [x1, y1, x2, y2])
-                        distances.append(d)
-                if distances:
-                    min_distance = min(distances)
-                    cv2.putText(frame, f"Dist: {min_distance:.1f}", center,
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                    # Bạn có thể thêm logic: nếu min_distance < một ngưỡng nào đó, xe đang nằm trong lane
-                    if min_distance < 50:
-                        cv2.circle(frame, center, 5, (0, 255, 255), -1)
+            distance_m = estimate_distance(pred_box, focal_length, car_length)
+            speed_kmh = tracker.get_velocity(fps, car_length, ego_motion)
+            cv2.putText(frame, f"Dist: {distance_m:.1f} m", center,
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            cv2.putText(frame, f"Speed: {speed_kmh:.1f} km/h", (pred_box[0], pred_box[1]-30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            
+            # Lưu thông tin của từng đối tượng trong frame này
+            record = {
+                "frame": frame_counter,
+                "second": round(current_second, 2),
+                "id": tracker.id,
+                "label": tracker.label,
+                "bbox": f"{pred_box[0]},{pred_box[1]},{pred_box[2]},{pred_box[3]}",
+                "distance_m": round(distance_m, 2),
+                "speed_kmh": round(speed_kmh, 2)
+            }
+            all_records.append(record)
 
-        # Hiển thị kết quả
         cv2.imshow("YOLO ViT + Lane Detection", frame)
 
     key = cv2.waitKey(10) & 0xFF
@@ -209,3 +273,26 @@ while cap.isOpened():
 
 cap.release()
 cv2.destroyAllWindows()
+
+# ------------------------
+# Sau khi xử lý video, sắp xếp và ghi thông tin ra file CSV.
+# File CSV sẽ được lưu trong folder "data" với tên '<tênfile>_data.csv'
+# ------------------------
+sorted_records = sorted(all_records, key=lambda x: (x["second"], x["frame"], x["id"], x["label"]))
+
+# Tạo folder "data" nếu chưa tồn tại
+output_folder = "data"
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
+
+# Tạo tên file CSV từ video_filename (loại bỏ phần mở rộng)
+base_name = os.path.splitext(video_filename)[0]
+output_file = os.path.join(output_folder, f"{base_name}_data.csv")
+with open(output_file, mode="w", newline="") as csvfile:
+    fieldnames = ["frame", "second", "id", "label", "bbox", "distance_m", "speed_kmh"]
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    writer.writeheader()
+    for rec in sorted_records:
+        writer.writerow(rec)
+
+print(f"Đã xuất thông tin nhận diện ra file: {output_file}")
