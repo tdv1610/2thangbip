@@ -15,7 +15,7 @@ def multi_level_lag_scheme(seq, lags=[1, 2, 3]):
 
 def normalize_input(seq, scaler):
     """
-    Normalize dữ liệu đầu vào dùng scaler (ví dụ, StandardScaler).
+    Normalize dữ liệu đầu vào dùng scaler (ví dụ StandardScaler).
     scaler cần có thuộc tính mean_ và scale_.
     """
     num_features = scaler.mean_.shape[0]
@@ -25,7 +25,8 @@ def normalize_input(seq, scaler):
 
 def denormalize_output(pred, scaler):
     """
-    Denormalize vector dự đoán (lấy 4 giá trị đầu tiên: [x1, y1, x2, y2])
+    Denormalize vector dự đoán: Lấy 4 giá trị đầu tiên: [x1, y1, x2, y2].
+    Nếu bạn cần sử dụng tất cả 5 giá trị, điều chỉnh lại cho phù hợp.
     """
     indices = [0, 1, 2, 3]
     pred_norm = pred[indices]
@@ -36,7 +37,15 @@ def denormalize_output(pred, scaler):
 def draw_boxes(frame, boxes):
     """
     Vẽ danh sách bounding box lên frame.
-    boxes: list các tuple ((x1, y1, x2, y2), color)
+    boxes: list các tuple, mỗi tuple có thể là:
+       ((x1, y1, x2, y2), color) hoặc ((x1, y1, x2, y2), color, text)
     """
-    for (x1, y1, x2, y2), color in boxes:
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+    for box in boxes:
+        if len(box) == 2:
+            (x1, y1, x2, y2), color = box
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+        elif len(box) == 3:
+            (x1, y1, x2, y2), color, text = box
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            cv2.putText(frame, text, (int(x1), int(y1)-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
