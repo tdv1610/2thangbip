@@ -24,7 +24,7 @@ class BoundingBoxPredictor:
     def __init__(self, model, scaler):
         """
         model: instance của LSTMPredictor.
-        scaler: đối tượng scaler (đã huấn luyện) dùng để normalize/denormalize.
+        scaler: đối tượng scaler đã huấn luyện dùng để normalize/denormalize.
         """
         self.model = model
         self.scaler = scaler
@@ -32,20 +32,18 @@ class BoundingBoxPredictor:
     def predict(self, df):
         """
         df: pandas DataFrame chứa lịch sử bounding box của 1 đối tượng.
-        Các cột cần có: "frame", "x1", "y1", "x2", "y2", "speed_kmh".
-        Trả về danh sách dự đoán cho từng frame (None nếu không đủ dữ liệu).
+        Các cột cần có: "frame", "x1", "y1", "x2", "y2", "speed_kmh"
+        Trả về danh sách dự đoán cho từng frame (None nếu không đủ dữ liệu)
         """
         df_sorted = df.sort_values("frame")
         predictions = []
-        # Ví dụ: sử dụng 7 frame cuối (6 frame lịch sử + frame hiện tại) để dự đoán bounding box hiện tại
+        # Sử dụng 7 frame cuối (6 frame lịch sử + frame hiện tại) để dự đoán bounding box hiện tại
         for idx in range(len(df_sorted)):
             if idx < 6:
                 predictions.append(None)
                 continue
             seq = df_sorted.iloc[idx-6: idx+1][["x1", "y1", "x2", "y2", "speed_kmh"]].values  # (7, 5)
-            # Áp dụng multi-level lag scheme để có input phù hợp (bạn có thể điều chỉnh hàm này tùy ý)
             input_seq = multi_level_lag_scheme(seq)
-            # Normalize input
             input_seq = normalize_input(input_seq, self.scaler)
             input_tensor = torch.tensor(input_seq, dtype=torch.float32).unsqueeze(0)  # (1, seq_len, 5)
             with torch.no_grad():
