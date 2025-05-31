@@ -1,3 +1,4 @@
+import os
 import cv2
 import pandas as pd
 import torch
@@ -24,7 +25,7 @@ model.eval()
 predictor = BoundingBoxPredictor(model, scaler)
 
 # --- Đọc dữ liệu CSV ---
-csv_path = "/Users/nhxtrxng/2thangbip/data/challenge_data.csv"  # CSV phải có các cột: frame, id, bbox, speed_kmh, label, … 
+csv_path = "datavideo.csv"  # CSV phải có các cột: frame, id, bbox, speed_kmh, label, … 
 df = pd.read_csv(csv_path)
 
 # Tách cột 'bbox' thành các cột: x1, y1, x2, y2
@@ -48,7 +49,19 @@ for object_id, group in object_groups:
     all_predictions[object_id] = preds
 
 # --- Mở video đầu vào (đường dẫn chính xác) ---
-video_path = "/Users/nhxtrxng/2thangbip/archive 2/testing/challenge.mp4"
+# Đọc đường dẫn video từ file tạm
+temp_video_path_file = "video_path.txt"
+if not os.path.isfile(temp_video_path_file):
+    print(f"Không tìm thấy file lưu đường dẫn video: {temp_video_path_file}")
+    exit()
+
+with open(temp_video_path_file, "r") as f:
+    video_path = f.read().strip()
+
+if not os.path.isfile(video_path):
+    print(f"Không tìm thấy video: {video_path}")
+    exit()
+
 cap = cv2.VideoCapture(video_path)
 if not cap.isOpened():
     print(f"Không thể mở video: {video_path}")

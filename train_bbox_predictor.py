@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 import pickle
 
 # --- Cấu hình ---
-CSV_PATH = "/Users/nhxtrxng/2thangbip/data/challenge_data.csv"       # File CSV chứa dữ liệu huấn luyện
+CSV_PATH = r"D:\NCKH_2\2thangbip\datavideo.csv"  # Sử dụng raw string     # File CSV chứa dữ liệu huấn luyện
 MODEL_SAVE_PATH = "bbox_predictor.pth"
 SCALER_SAVE_PATH = "scaler.pkl"
 EPOCHS = 50
@@ -62,7 +62,7 @@ df[['x1', 'y1', 'x2', 'y2']] = df['bbox'].str.split(',', expand=True).astype(flo
 
 # Tạo các sequence huấn luyện
 X, y = create_sequences(df, sequence_length=SEQUENCE_LENGTH)
-print(f"Đã tạo {X.shape[0]} mẫu. X shape: {X.shape}, y shape: {y.shape}")
+
 
 # --- Chuẩn hóa dữ liệu ---
 # Huấn luyện scaler trên dữ liệu target (y)
@@ -72,7 +72,7 @@ y_scaled = scaler.fit_transform(y)
 # Lưu scaler vào file
 with open(SCALER_SAVE_PATH, "wb") as f:
     pickle.dump(scaler, f)
-print(f"Đã lưu scaler vào {SCALER_SAVE_PATH}")
+
 
 # Cũng chuẩn hóa X
 X_flat = X.reshape(-1, INPUT_SIZE)
@@ -119,4 +119,5 @@ for epoch in range(EPOCHS):
 
 # --- Lưu model ---
 torch.save(model.state_dict(), MODEL_SAVE_PATH)
-print(f"Đã lưu state_dict của model vào {MODEL_SAVE_PATH}")
+import subprocess
+subprocess.run(["python", "main.py"])

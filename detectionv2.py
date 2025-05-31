@@ -16,7 +16,7 @@ model = YolosForObjectDetection.from_pretrained("hustvl/yolos-tiny").to(device)
 # 1.1. CÀI ĐẶT THÔNG SỐ CHO TÍNH KHOẢNG CÁCH
 # ------------------------
 focal_length = 550    # tiêu cự camera (pixel)
-car_length = 2.5      # chiều dài xe thực tế (mét)
+car_length = 5   # chiều dài xe thực tế (mét)
 
 # ------------------------
 # 1.2. CẤU HÌNH MÔ PHỎNG EGO-MOTION
@@ -114,7 +114,12 @@ video_path = os.path.join(video_folder, video_filename)
 if not os.path.isfile(video_path):
     print(f"Không tìm thấy file: {video_path}")
     exit()
+# Lưu đường dẫn video vào file tạm
+temp_video_path_file = "video_path.txt"
+with open(temp_video_path_file, "w") as f:
+    f.write(video_path)
 
+print(f"Đã lưu đường dẫn video vào file: {temp_video_path_file}")
 start_time = input("Nhập thời gian bắt đầu (giây, mặc định 0): ").strip()
 start_time = float(start_time) if start_time else 0
 
@@ -126,13 +131,6 @@ if not cap.isOpened():
 cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
 fps = cap.get(cv2.CAP_PROP_FPS)
 frame_jump = int(fps * 5)
-
-print("\nCác phím điều khiển:")
-print("  'q'  : Thoát video")
-print("  'p'  : Tạm dừng/tiếp tục")
-print("  ←    : Tua lùi 5 giây")
-print("  →    : Tua tiến 5 giây\n")
-
 paused = False
 trackers = []
 next_id = 0
@@ -146,7 +144,7 @@ while cap.isOpened():
     if not paused:
         ret, frame = cap.read()
         if not ret:
-            print("Đã hết video!")
+            print("")
             break
 
         frame_counter += 1
@@ -211,21 +209,6 @@ while cap.isOpened():
         trackers = new_trackers
 
         # ------------------------
-        # 4.2. Lane Detection: Dùng Canny + Hough để phát hiện làn đường
-        # ------------------------
-        gray_lane = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blur_lane = cv2.GaussianBlur(gray_lane, (5, 5), 0)
-        edges = cv2.Canny(blur_lane, 50, 150)
-        h, w = edges.shape
-        roi_vertices = np.array([[(0, h),
-                                   (w * 0.45, h * 0.6),
-                                   (w * 0.55, h * 0.6),
-                                   (w, h)]], dtype=np.int32)
-        masked_edges = region_of_interest(edges, roi_vertices)
-        lane_lines = cv2.HoughLinesP(masked_edges, rho=1, theta=np.pi/180,
-                                     threshold=50, minLineLength=100, maxLineGap=50)
-        draw_lines(frame, lane_lines, color=(255, 0, 0), thickness=3)
-
         # ------------------------
         # 4.3. Ước tính khoảng cách và vận tốc (kết hợp vận tốc tương đối và tốc độ camera)
         # ------------------------
@@ -251,25 +234,11 @@ while cap.isOpened():
             }
             all_records.append(record)
 
-        cv2.imshow("YOLO ViT + Lane Detection", frame)
-
-    key = cv2.waitKey(10) & 0xFF
-    if key == ord('q'):
-        print("Thoát video!")
-        break
-    elif key == ord('p'):
-        paused = not paused
-        print("Tạm dừng. Nhấn 'p' để tiếp tục..." if paused else "Tiếp tục.")
-    elif key == 81:  # Mũi tên trái (←)
-        current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
-        new_frame = max(0, current_frame - frame_jump)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
-        print(f"Tua lùi đến {new_frame / fps:.2f} giây")
-    elif key == 83:  # Mũi tên phải (→)
-        current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
-        new_frame = min(cap.get(cv2.CAP_PROP_FRAME_COUNT) - 1, current_frame + frame_jump)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, new_frame)
-        print(f"Tua tiến đến {new_frame / fps:.2f} giây")
+              # Hiển thị video
+        cv2.imshow("YOLO ViT Detection", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Thoát video!")
+            break
 
 cap.release()
 cv2.destroyAllWindows()
@@ -287,12 +256,12 @@ if not os.path.exists(output_folder):
 
 # Tạo tên file CSV từ video_filename (loại bỏ phần mở rộng)
 base_name = os.path.splitext(video_filename)[0]
-output_file = os.path.join(output_folder, f"{base_name}_data.csv")
+output_file = "datavideo.csv"
 with open(output_file, mode="w", newline="") as csvfile:
     fieldnames = ["frame", "second", "id", "label", "bbox", "distance_m", "speed_kmh"]
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
     writer.writeheader()
     for rec in sorted_records:
         writer.writerow(rec)
-
-print(f"Đã xuất thông tin nhận diện ra file: {output_file}")
+import subprocess
+subprocess.run(["python", "train_bbox_predictor.py"])
