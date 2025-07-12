@@ -9,8 +9,8 @@ from predictor import LSTMPredictor, BoundingBoxPredictor
 from utils import multi_level_lag_scheme, normalize_input, denormalize_output, draw_boxes, KalmanBoxTracker, get_center, compute_iou
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MIN_WIDTH = 50
-MIN_HEIGHT = 40
+MIN_WIDTH = 60
+MIN_HEIGHT = 50
 YOLO_SCORE_THRES = 0.85
 KALMAN_DIST_THRES = 55
 FOCAL_LENGTH = 550
