@@ -11,7 +11,7 @@ LEARNING_RATE = 1e-3
 DROPOUT = 0.2
 BATCH_SIZE = 32
 MAX_EPOCHS = 10000    # Cực lớn, thực ra sẽ dừng sớm nếu loss không giảm
-PATIENCE = 100        # Sau 30 epoch liên tiếp loss không giảm thì dừng
+PATIENCE = 50        # Sau 30 epoch liên tiếp loss không giảm thì dừng
 
 # ==== Load data ====
 X_train = np.load("X_train.npy")
@@ -63,7 +63,7 @@ for epoch in range(1, MAX_EPOCHS + 1):
     if epoch_loss < best_loss:
         best_loss = epoch_loss
         patience_counter = 0
-        torch.save(model.state_dict(), "bbox_predictor_best.pth")
+        torch.save(model.state_dict(), "bbox_predictor.pth")
     else:
         patience_counter += 1
 
