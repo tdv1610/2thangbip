@@ -2,42 +2,33 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from predictor import LSTMPredictor
+from predictor import LSTMSeq2SeqPredictor  # Sử dụng model mới seq2seq
 from dataset import BBoxDataset
 from torch.utils.data import DataLoader
 
 # ==== Config ====
 LEARNING_RATE = 1e-3
-DROPOUT = 0.2
 BATCH_SIZE = 32
 MAX_EPOCHS = 10000    # Cực lớn, thực ra sẽ dừng sớm nếu loss không giảm
-PATIENCE = 50        # Sau 30 epoch liên tiếp loss không giảm thì dừng
+PATIENCE = 50         # Sau PATIENCE epoch liên tiếp loss không giảm thì dừng
+PRED_LENGTH = 10      # Dự đoán 10 bước tiếp theo
 
 # ==== Load data ====
-X_train = np.load("X_train.npy")
-y_train = np.load("y_train.npy")
+X_train = np.load("X_train.npy")    # (num_samples, 7, 9)
+y_train = np.load("y_train.npy")    # (num_samples, 10, 9)
 dataset = BBoxDataset(X_train, y_train)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ==== Model có dropout ====
-class LSTMPredictorDropout(nn.Module):
-    def __init__(self, input_size=9, hidden_size=64, num_layers=1, output_size=9, dropout=0.2):
-        super(LSTMPredictorDropout, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0)
-        self.dropout = nn.Dropout(dropout)
-        self.attn = nn.Linear(hidden_size, 1)
-        self.fc = nn.Linear(hidden_size, output_size)
+# ==== Model Seq2Seq ====
+model = LSTMSeq2SeqPredictor(
+    input_size=X_train.shape[2],   # 9
+    hidden_size=64,
+    num_layers=1,
+    output_size=y_train.shape[2],  # 9
+    pred_length=PRED_LENGTH
+).to(DEVICE)
 
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        attn_weights = torch.softmax(self.attn(lstm_out), dim=1)
-        context = torch.sum(attn_weights * lstm_out, dim=1)
-        context = self.dropout(context)
-        out = self.fc(context)
-        return out
-
-model = LSTMPredictorDropout(input_size=X_train.shape[2], hidden_size=64, num_layers=1, output_size=y_train.shape[1], dropout=DROPOUT).to(DEVICE)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
@@ -52,7 +43,8 @@ for epoch in range(1, MAX_EPOCHS + 1):
     for inputs, targets in dataloader:
         inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
         optimizer.zero_grad()
-        outputs = model(inputs)
+        # Teacher forcing: tỉ lệ 0.5 khi train (giúp model học nhanh và ổn định hơn)
+        outputs = model(inputs, targets, teacher_forcing_ratio=0.5)
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
