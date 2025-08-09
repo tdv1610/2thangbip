@@ -152,4 +152,4 @@ def main(video_path):
         print("Không có đủ dữ liệu để tính MAE/IoU!")
 
 if __name__ == "__main__":
-    main("archive 2/testing/challenge_video.mp4")
+    main("archive 2/testing/challenge.mp4")
