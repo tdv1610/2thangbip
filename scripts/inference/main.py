@@ -42,7 +42,13 @@ processor = YolosImageProcessor.from_pretrained("hustvl/yolos-tiny")
 yolo_model = YolosForObjectDetection.from_pretrained("hustvl/yolos-tiny").to(DEVICE)
 with open(os.path.join(ARRAYS_DIR, "scaler.pkl"), "rb") as f:
     scaler = pickle.load(f)
-lstm_model = LSTMSeq2SeqPredictor(input_size=9, hidden_size=64, num_layers=1, output_size=9, pred_length=PRED_LENGTH).to(DEVICE)
+lstm_model = LSTMSeq2SeqPredictor(
+    input_size=9,
+    hidden_size=64,
+    num_layers=1,
+    output_size=9,
+    pred_length=PRED_LENGTH,
+).to(DEVICE)
 lstm_model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, "finetune.pth"), map_location=DEVICE))
 lstm_model.eval()
 # Wrapper predictor với tuỳ chọn dùng MLS trong file main này
@@ -70,7 +76,11 @@ def main(video_path):
         inputs = processor(images=image_rgb, return_tensors="pt").to(DEVICE)
         outputs = yolo_model(**inputs)
         target_sizes = torch.tensor([frame.shape[:2]], device=outputs.logits.device)
-        results = processor.post_process_object_detection(outputs, threshold=YOLO_SCORE_THRES, target_sizes=target_sizes)[0]
+        results = processor.post_process_object_detection(
+            outputs,
+            threshold=YOLO_SCORE_THRES,
+            target_sizes=target_sizes
+        )[0]
 
         detections = []
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
@@ -138,11 +148,24 @@ def main(video_path):
         for tracker in trackers:
             if len(tracker.history) == 7:
                 seq = np.array(tracker.history)
-                # Dùng wrapper với MLS để nhất quán cách vẽ bbox
                 denorm_preds = predictor.predict_from_array(seq, use_mls=True)
                 pred_box = denorm_preds[-1]
-                pred_box_int = [int(pred_box[0]), int(pred_box[1]), int(pred_box[2]), int(pred_box[3])]
-                future_preds[(tracker.id, frame_idx + PRED_LENGTH)] = pred_box_int
+
+                # --- Điều chỉnh kích thước khung dự đoán = khung thực tế ---
+                real_box = tracker.bbox
+                real_w = real_box[2] - real_box[0]
+                real_h = real_box[3] - real_box[1]
+
+                # Tâm dự đoán từ LSTM
+                cx = (pred_box[0] + pred_box[2]) / 2
+                cy = (pred_box[1] + pred_box[3]) / 2
+
+                x1 = int(cx - real_w / 2)
+                y1 = int(cy - real_h / 2)
+                x2 = int(cx + real_w / 2)
+                y2 = int(cy + real_h / 2)
+
+                future_preds[(tracker.id, frame_idx + PRED_LENGTH)] = [x1, y1, x2, y2]
 
         # Vẽ bbox thực tế hiện tại (màu xanh)
         for tracker in trackers:
@@ -151,10 +174,10 @@ def main(video_path):
 
         # Vẽ bbox dự đoán t+10 và tính MAE/IoU
         for tracker in trackers:
-            pred_box = future_preds.get((tracker.id, frame_idx), None)  # frame_idx là thời điểm t hiện tại (frame = t = t+10 của history t-10)
+            pred_box = future_preds.get((tracker.id, frame_idx), None)
             if pred_box is not None:
                 boxes_to_draw.append((pred_box, (0, 0, 255), f"Pred t+10 ID:{tracker.id}"))
-                real_box = obj_histories[tracker.id].get(frame_idx, None)  # bbox thật tại frame t
+                real_box = obj_histories[tracker.id].get(frame_idx, None)
                 if real_box is not None:
                     mae = np.mean(np.abs(np.array(real_box) - np.array(pred_box)))
                     iou = compute_iou(real_box, pred_box)
@@ -178,6 +201,5 @@ def main(video_path):
 
 
 if __name__ == "__main__":
-    # Default demo video relative to repo root
-    default_video = os.path.join(ROOT_DIR, "archive 2", "testing", "train_vid_1.mp4")
+    default_video = os.path.join(ROOT_DIR, "archive 2", "testing", "challenge_video.mp4")
     main(default_video)

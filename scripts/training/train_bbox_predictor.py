@@ -16,7 +16,7 @@ PRED_LENGTH = 10
 INPUT_SIZE = 9
 
 ARRAYS_DIR = os.path.join(ROOT_DIR, "artifacts", "arrays")
-os.makedirs(ARRAYS_DIR, exist_ok=True)
+os.makedirs(ARRAYS_DIR, exist_ok=True) 
 
 # Đọc 1 file đã được làm sạch
 if not os.path.exists(DATA_PATH):

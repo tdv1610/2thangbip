@@ -1,14 +1,19 @@
 # create_csv_from_video.py
 import os
+import sys
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
 import cv2
 import numpy as np
 import csv
 from transformers import YolosImageProcessor, YolosForObjectDetection
-from utils import KalmanBoxTracker, get_center, estimate_distance
+from project.utils.utils import KalmanBoxTracker, get_center, estimate_distance
 import torch
 
 def create_csv_from_video(
-    video_folder="../archive 2/testing",
+    video_folder=r"D:\New folder (4)\2thangbip\archive 2\testing",
     output_folder="../data",
     focal_length=550,
     car_length=2.5,

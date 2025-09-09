@@ -3,10 +3,10 @@ import torch.nn as nn
 from project.utils.utils import multi_level_lag_scheme, normalize_input, denormalize_output
 
 class LSTMSeq2SeqPredictor(nn.Module):
-    def __init__(self, input_size=9, hidden_size=64, num_layers=1, output_size=9, pred_length=10):
+    def __init__(self, input_size=9, hidden_size=64, num_layers=1, output_size=9, pred_length=10, dropout=0.2):
         super().__init__()
-        self.encoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.decoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.encoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.decoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
         self.fc_out = nn.Linear(hidden_size, output_size)
         self.pred_length = pred_length
 
