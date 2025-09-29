@@ -169,5 +169,5 @@ def main(video_path):
 
 
 if __name__ == "__main__":
-    default_video = os.path.join(ROOT_DIR, "archive 2", "testing", "challenge_video.mp4")
+    default_video = os.path.join(ROOT_DIR, "archive 2", "test", "test1.mp4")
     main(default_video)
