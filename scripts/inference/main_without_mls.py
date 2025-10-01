@@ -31,13 +31,19 @@ WEIGHTS_DIR = os.path.join(ARTIFACTS_DIR, "weights")
 
 processor = YolosImageProcessor.from_pretrained("hustvl/yolos-tiny")
 yolo_model = YolosForObjectDetection.from_pretrained("hustvl/yolos-tiny").to(DEVICE)
+
 with open(os.path.join(ARRAYS_DIR, "scaler.pkl"), "rb") as f:
     scaler = pickle.load(f)
-lstm_model = LSTMSeq2SeqPredictor(input_size=9, hidden_size=64, num_layers=1, output_size=9, pred_length=PRED_LENGTH).to(DEVICE)
-# Dùng cùng trọng số với main.py để so sánh công bằng
+
+lstm_model = LSTMSeq2SeqPredictor(
+    input_size=9, hidden_size=64, num_layers=1, output_size=9, pred_length=PRED_LENGTH
+).to(DEVICE)
+
+# Load trọng số đã fine-tune
 lstm_model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, "finetune.pth"), map_location=DEVICE))
 lstm_model.eval()
-# Wrapper predictor với tuỳ chọn không dùng MLS ở file này
+
+# Predictor wrapper
 predictor = BoundingBoxPredictor(lstm_model, scaler, pred_length=PRED_LENGTH)
 
 
@@ -62,7 +68,9 @@ def main(video_path):
         inputs = processor(images=image_rgb, return_tensors="pt").to(DEVICE)
         outputs = yolo_model(**inputs)
         target_sizes = torch.tensor([frame.shape[:2]], device=outputs.logits.device)
-        results = processor.post_process_object_detection(outputs, threshold=YOLO_SCORE_THRES, target_sizes=target_sizes)[0]
+        results = processor.post_process_object_detection(
+            outputs, threshold=YOLO_SCORE_THRES, target_sizes=target_sizes
+        )[0]
 
         detections = []
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
@@ -76,7 +84,7 @@ def main(video_path):
                 "score": float(score)
             })
 
-        # Dự đoán trước vị trí kế tiếp của các tracker để association mượt hơn
+        # Predict step Kalman cho mỗi tracker
         for t in trackers:
             t.predict()
 
@@ -109,14 +117,13 @@ def main(video_path):
         trackers = new_trackers
 
         boxes_to_draw = []
-        # Duyệt từng tracker để dự đoán t+10
+        # Cập nhật history cho từng tracker
         for tracker in trackers:
-            bbox = tracker.bbox  # bbox thực tế hiện tại
+            bbox = tracker.bbox
             obj_histories[tracker.id][frame_idx] = bbox
 
             state = tracker.kalman.statePost.flatten()
             vx1, vy1, vx2, vy2 = float(state[4]), float(state[5]), float(state[6]), float(state[7])
-            # Ước lượng tốc độ km/h từ Kalman để giảm lệch đặc trưng
             speed_kmh = tracker.get_velocity(fps=fps, car_length=CAR_LENGTH, ego_motion=np.array([0.0, 0.0]))
 
             if not hasattr(tracker, "history"):
@@ -126,26 +133,39 @@ def main(video_path):
                 vx1, vy1, vx2, vy2, speed_kmh
             ])
 
-        # Nếu đã đủ 7 bước lịch sử thì dự đoán 10 bước tiếp theo (không dùng MLS)
+        # Nếu đủ 7 bước lịch sử thì dự đoán 10 bước tiếp theo
         for tracker in trackers:
             if len(tracker.history) == 7:
                 seq = np.array(tracker.history)
                 denorm_preds = predictor.predict_from_array(seq, use_mls=False)
                 pred_box = denorm_preds[-1]
-                pred_box_int = [int(pred_box[0]), int(pred_box[1]), int(pred_box[2]), int(pred_box[3])]
+
+                # Giữ nguyên kích thước khung YOLO gốc
+                x1, y1, x2, y2 = tracker.bbox
+                w, h = x2 - x1, y2 - y1
+
+                cx = (pred_box[0] + pred_box[2]) / 2
+                cy = (pred_box[1] + pred_box[3]) / 2
+
+                new_x1 = int(cx - w / 2)
+                new_y1 = int(cy - h / 2)
+                new_x2 = int(cx + w / 2)
+                new_y2 = int(cy + h / 2)
+                pred_box_int = [new_x1, new_y1, new_x2, new_y2]
+
                 future_preds[(tracker.id, frame_idx + PRED_LENGTH)] = pred_box_int
 
-        # Vẽ bbox thực tế hiện tại (màu xanh)
+        # Vẽ bbox thực tế hiện tại (xanh lá)
         for tracker in trackers:
             bbox = tracker.bbox
             boxes_to_draw.append((bbox, (0, 255, 0), f"ID {tracker.id}-{tracker.label}"))
 
-        # Vẽ bbox dự đoán t+10 và tính MAE/IoU
+        # Vẽ bbox dự đoán t+10 (đỏ) và tính MAE/IoU
         for tracker in trackers:
-            pred_box = future_preds.get((tracker.id, frame_idx), None)  # frame_idx là thời điểm t hiện tại (frame = t = t+10 của history t-10)
+            pred_box = future_preds.get((tracker.id, frame_idx), None)
             if pred_box is not None:
                 boxes_to_draw.append((pred_box, (0, 0, 255), f"Pred t+10 ID:{tracker.id}"))
-                real_box = obj_histories[tracker.id].get(frame_idx, None)  # bbox thật tại frame t
+                real_box = obj_histories[tracker.id].get(frame_idx, None)
                 if real_box is not None:
                     mae = np.mean(np.abs(np.array(real_box) - np.array(pred_box)))
                     iou = compute_iou(real_box, pred_box)
@@ -154,14 +174,14 @@ def main(video_path):
                     cnt += 1
 
         draw_boxes(frame, boxes_to_draw)
-        cv2.imshow("YOLO+Kalman+LSTM (Green: Real, Red: t+10 Predict)", frame)
+        cv2.imshow("YOLO+Kalman+LSTM (Green: Real, Red: t+10 Predict - fixed size)", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
     if cnt > 0:
-        print("\n===== ĐÁNH GIÁ TRAJECTORY PREDICTION (t+10, không dùng multi-level lag scheme) =====")
+        print("\n===== ĐÁNH GIÁ TRAJECTORY PREDICTION (t+10, khung cố định) =====")
         print(f"- MAE trung bình (pixel): {np.mean(mae_list):.2f}")
         print(f"- IoU trung bình: {np.mean(iou_list):.4f}")
     else:
